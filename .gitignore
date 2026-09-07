@@ -1,0 +1,31 @@
+# Gradle
+.gradle/
+build/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env / secrets — every real .env is ignored; only the .example templates
+# are meant to be committed, so they're explicitly un-ignored below.
+.env
+.env.*
+!.env.example
+*.pem
+application-local.yml
+
+# Node / frontend (reserved for when frontend/ is initialized)
+node_modules/
+dist/
+.vite/
+
+# Logs
+*.log
