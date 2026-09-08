@@ -1,9 +1,9 @@
 package com.medicare.identity.service;
 
+import com.medicare.identity.AbstractIntegrationTest;
 import com.medicare.identity.repository.UserRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 
 import java.util.UUID;
 import java.util.concurrent.*;
@@ -11,8 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-class UserServiceProvisioningTest {
+class UserServiceProvisioningTest extends AbstractIntegrationTest {
 
     @Autowired
     private UserService userService;
