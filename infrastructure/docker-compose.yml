@@ -17,5 +17,22 @@ services:
       timeout: 5s
       retries: 5
 
+  identity-service:
+    build:
+      context: ../services/identity-service
+    container_name: medicare-identity-service
+    restart: unless-stopped
+    depends_on:
+      identity-db:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://identity-db:5432/${IDENTITY_DB_NAME}
+      DB_USERNAME: ${IDENTITY_DB_USERNAME}
+      DB_PASSWORD: ${IDENTITY_DB_PASSWORD}
+      PATIENT_SERVICE_CLIENT_SECRET: ${PATIENT_SERVICE_CLIENT_SECRET}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL}
+    ports:
+      - "8081:8081"
+
 volumes:
   identity_db_data:
