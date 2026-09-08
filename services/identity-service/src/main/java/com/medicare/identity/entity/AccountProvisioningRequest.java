@@ -30,7 +30,7 @@ public class AccountProvisioningRequest {
     @Column(name = "user_id")
     private UUID userId;
 
-    @Column(name = "requested_email", nullable = false)
+    @Column(name = "requested_email", nullable = false, length = 320)
     private String requestedEmail;
 
     @Column(name = "resolved_at")

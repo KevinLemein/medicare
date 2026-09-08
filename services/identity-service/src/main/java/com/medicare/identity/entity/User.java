@@ -25,7 +25,7 @@ public class User {
     @EqualsAndHashCode.Include
     private UUID id;
 
-    @Column(nullable = false, unique = true)
+    @Column(nullable = false, unique = true, length = 320)
     private String email;
 
     @Column(name = "first_name", nullable = false)
