@@ -111,6 +111,10 @@ public class SecurityConfig {
                         .requestMatchers("/internal/patients/provision")
                         .hasAuthority("SCOPE_identity:provision-patient")
 
+                        // Admin-only operations: staff account lifecycle,
+                        // role changes, and audit-trail retrieval.
+                        .requestMatchers("/admin/**").hasRole("SYSTEM_ADMIN")
+
                         // Login/error pages
                         .requestMatchers(
                                 "/login",
@@ -132,15 +136,16 @@ public class SecurityConfig {
 
                 // CSRF protection is session/cookie-based and only makes
                 // sense for the browser-rendered hosted login form (which
-                // still benefits — it guards against login-CSRF). The
-                // account-management endpoints below are a JSON API called
+                // still benefits — it guards against login-CSRF). Every
+                // other state-changing endpoint here is a JSON API called
                 // by non-browser or Bearer-token clients (the SPA via
-                // fetch, patient-service via client_credentials) that never
-                // carry a session-bound CSRF token, so the check is
-                // exempted for those paths.
+                // fetch, patient-service via client_credentials, admin
+                // tooling via Bearer JWT) that never carry a session-bound
+                // CSRF token, so the check is exempted for those paths.
                 .csrf(csrf -> csrf.ignoringRequestMatchers(
                         "/accounts/**",
-                        "/internal/**"
+                        "/internal/**",
+                        "/admin/**"
                 ))
 
                 // Allow this service to validate JWT access tokens
