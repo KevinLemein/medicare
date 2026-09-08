@@ -45,6 +45,7 @@ Spring Security `ROLE_*` authority by resource servers (see
 | V5 | `audit_events` | Append-only log of identity events (login, lockout, password change, role change, ...) |
 | V6 | OAuth2 authorization server tables | Spring Authorization Server's own schema: `oauth2_registered_client`, `oauth2_authorization`, `oauth2_authorization_consent` |
 | V7 | `users` | Splits a single `full_name` column into `first_name` / `last_name` |
+| V8 | `users`, `account_provisioning_requests` | Widens `email` / `requested_email` from `VARCHAR(255)` to `VARCHAR(320)`, to fit any valid RFC 5321 email address |
 
 ## Two security filter chains
 
@@ -62,6 +63,20 @@ application start (`AuthorizationServerConfig.jwkSource`). This means
 restart** — acceptable for local development, but a persisted/rotated key
 would be needed before this goes anywhere near production.
 
+CSRF protection is enabled only where it makes sense: the hosted `/login`
+form (a real browser session — still worth guarding against login-CSRF).
+It's explicitly exempted for `/accounts/**`, `/internal/**`, and
+`/admin/**`, since those are JSON APIs called by non-browser or
+Bearer-token clients (the SPA via `fetch`, `patient-service` via
+`client_credentials`, admin tooling via Bearer JWT) that never carry a
+session-bound CSRF token.
+
+The hosted login page also wires `LoginAuditAuthenticationSuccessHandler` /
+`LoginAuditAuthenticationFailureHandler` (`com.medicare.identity.security`)
+into `formLogin()`, so every login attempt through it calls
+`UserService.recordSuccessfulLogin` / `recordFailedLoginAttempt` —
+otherwise lockout tracking and login audit events would never fire.
+
 ## REST endpoints
 
 | Endpoint | Method | Auth | Purpose |
@@ -71,12 +86,21 @@ would be needed before this goes anywhere near production.
 | `/accounts/password-reset/request` | POST | public | Request a reset link (always returns the same response, whether or not the email exists) |
 | `/accounts/password-reset/confirm` | POST | public | Consume a reset token and set a new password |
 | `/accounts/password/change` | POST | authenticated | Change the current user's password |
+| `/internal/patients/provision` | POST | `SCOPE_identity:provision-patient` | Called by `patient-service` (client_credentials) to provision a `PATIENT` account, idempotent on a caller-supplied key |
+| `/admin/users` | POST | `ROLE_SYSTEM_ADMIN` | Create a staff account (any role except `PATIENT`); activation link is logged, never returned in the response or emailed |
+| `/admin/users/{userId}/suspend` | POST | `ROLE_SYSTEM_ADMIN` | Suspend an `ACTIVE` account |
+| `/admin/users/{userId}/reactivate` | POST | `ROLE_SYSTEM_ADMIN` | Reactivate a `SUSPENDED` account |
+| `/admin/users/{userId}/deactivate` | POST | `ROLE_SYSTEM_ADMIN` | Deactivate an account |
+| `/admin/users/{userId}/reactivate-from-deactivated` | POST | `ROLE_SYSTEM_ADMIN` | Reactivate a `DEACTIVATED` account (requires a non-blank reason) |
+| `/admin/users/{userId}/role` | POST | `ROLE_SYSTEM_ADMIN` | Change a user's role |
+| `/admin/users/{userId}/unlock` | POST | `ROLE_SYSTEM_ADMIN` | Clear a lockout (reset failed-login count, unset `locked_until`) |
+| `/admin/audit-events` | GET | `ROLE_SYSTEM_ADMIN` | Paged audit trail for a given `subjectUserId` (`?subjectUserId=&page=&size=`) |
 | `/oauth2/*`, `/.well-known/*` | — | protocol-specific | Standard OAuth2/OIDC Authorization Server endpoints |
 
-Application logic beyond these HTTP entry points (staff account creation,
-patient account provisioning, suspend/reactivate/deactivate, role changes,
-account unlock) lives in `UserService` but isn't yet exposed over HTTP —
-those are admin/service-to-service operations still being wired up.
+Every admin endpoint resolves the acting admin from the authenticated
+principal (`Authentication.getName()` → `UserRepository.findByEmail(...)`),
+never from a request parameter — the same pattern
+`AccountPasswordController` already used for `actorUserId`.
 
 ## Registered OAuth2 clients
 
@@ -136,13 +160,25 @@ Verify it's up:
 curl http://localhost:8081/.well-known/oauth-authorization-server
 ```
 
+## Testing
+
+```bash
+cd services/identity-service
+./gradlew test
+```
+
+Every test that needs a real database extends
+`com.medicare.identity.AbstractIntegrationTest`, which starts one
+Testcontainers Postgres container per JVM run (Docker must be available —
+no manually-running local Postgres is required for `./gradlew test`) and
+overrides the datasource plus the two env-var-backed properties that have
+no `application.yml` default (`identity.oauth2.patient-service-client-secret`,
+`identity.bootstrap.admin-email`). Pure unit tests (`PasswordServiceTest`,
+`UserServiceLockoutTest`) use Mockito instead and don't touch a database.
+
 ## Known gaps / follow-ups
 
 - Signing key is regenerated on every restart (not persisted) — tokens
   don't survive a restart.
-- The account-provisioning endpoint `patient-service` is meant to call
-  (`identity:provision-patient` scope) isn't exposed over HTTP yet, even
-  though the service-layer logic (`UserService.provisionPatientAccount`)
-  and its idempotency table already exist.
 - Notifications (activation links, reset links) are logged to stdout only;
   there's no notification-service integration yet.
