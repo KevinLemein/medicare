@@ -8,6 +8,9 @@ import com.medicare.identity.util.TokenGenerator;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.stereotype.Service;
 
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -31,19 +34,23 @@ public class UserService {
     private final PasswordService passwordService;
     private final AuditEventService auditEventService;
     private final TokenGenerator tokenGenerator;
+    private final TransactionTemplate requiresNewTx;
 
     public UserService(UserRepository userRepository,
                        AccountTokenRepository accountTokenRepository,
                        AccountProvisioningRequestRepository provisioningRequestRepository,
                        PasswordService passwordService,
                        AuditEventService auditEventService,
-                       TokenGenerator tokenGenerator) {
+                       TokenGenerator tokenGenerator,
+                       PlatformTransactionManager transactionManager) {
         this.userRepository = userRepository;
         this.accountTokenRepository = accountTokenRepository;
         this.provisioningRequestRepository = provisioningRequestRepository;
         this.passwordService = passwordService;
         this.auditEventService = auditEventService;
         this.tokenGenerator = tokenGenerator;
+        this.requiresNewTx = new TransactionTemplate(transactionManager);
+        this.requiresNewTx.setPropagationBehavior(TransactionTemplate.PROPAGATION_REQUIRES_NEW);
     }
 
     private String normalize(String email) {
@@ -88,46 +95,85 @@ public class UserService {
         record Conflict() implements ProvisioningResult {}
     }
 
-    @Transactional
     public ProvisioningResult provisionPatientAccount(UUID idempotencyKey, String email,
-                                                      String firstName, String lastName) {
+                                                      String firstName, String lastName,
+                                                      String actorClientId) {
         Optional<AccountProvisioningRequest> existing = provisioningRequestRepository.findById(idempotencyKey);
         if (existing.isPresent()) {
-            AccountProvisioningRequest previous = existing.get();
-            return previous.getOutcome() == ProvisioningOutcome.CREATED
-                    ? new ProvisioningResult.Created(previous.getUserId())
-                    : new ProvisioningResult.Conflict();
+            return toResult(existing.get());
         }
 
         String normalizedEmail = normalize(email);
-        AccountProvisioningRequest request = new AccountProvisioningRequest();
-        request.setIdempotencyKey(idempotencyKey);
-        request.setRequestedEmail(normalizedEmail);
 
-        if (userRepository.existsByEmail(normalizedEmail)) {
-            request.setOutcome(ProvisioningOutcome.CONFLICT);
-            provisioningRequestRepository.save(request);
-            auditEventService.recordSystem(AuditEventType.PATIENT_PROVISIONING_CONFLICT, null,
-                    Map.of("requestedEmail", normalizedEmail));
-            return new ProvisioningResult.Conflict();
+        try {
+            return requiresNewTx.execute(status ->
+                    createPatientUser(idempotencyKey, normalizedEmail, firstName, lastName, actorClientId));
+        } catch (DataIntegrityViolationException e) {
+            // Someone else won a race against us — either the same
+            // idempotencyKey (a client retry overlapping its own prior
+            // in-flight request) or the same email under a different key.
+            // Re-check by idempotencyKey rather than assuming which: if our
+            // own key is now present, that's the authoritative result
+            // (§ same request ID + same request => same result). Only if
+            // it's genuinely absent was this purely an email collision.
+            return provisioningRequestRepository.findById(idempotencyKey)
+                    .map(this::toResult)
+                    .orElseGet(() -> requiresNewTx.execute(status ->
+                            recordConflict(idempotencyKey, normalizedEmail, actorClientId)));
         }
+    }
 
+    private ProvisioningResult toResult(AccountProvisioningRequest request) {
+        return request.getOutcome() == ProvisioningOutcome.CREATED
+                ? new ProvisioningResult.Created(request.getUserId())
+                : new ProvisioningResult.Conflict();
+    }
+
+    private ProvisioningResult createPatientUser(UUID idempotencyKey, String normalizedEmail,
+                                                 String firstName, String lastName, String actorClientId) {
         User user = new User();
         user.setEmail(normalizedEmail);
         user.setFirstName(firstName);
         user.setLastName(lastName);
         user.setRole(Role.PATIENT);
         user.setStatus(AccountStatus.PENDING_ACTIVATION);
-        userRepository.save(user);
+        // saveAndFlush forces the unique-constraint check to happen now,
+        // inside this REQUIRES_NEW transaction, rather than at end-of-request
+        // — so a collision here is caught by *this* transaction's rollback,
+        // not silently deferred past the point where we've already decided
+        // what to return.
+        userRepository.saveAndFlush(user);
 
+        AccountProvisioningRequest request = new AccountProvisioningRequest();
+        request.setIdempotencyKey(idempotencyKey);
+        request.setRequestedEmail(normalizedEmail);
         request.setOutcome(ProvisioningOutcome.CREATED);
         request.setUserId(user.getId());
+        request.setResolvedAt(Instant.now());
         provisioningRequestRepository.save(request);
 
-        auditEventService.recordSystem(AuditEventType.ACCOUNT_CREATED, user.getId(),
+        // §2/§17: this is a machine caller, not a human admin — recorded
+        // as actor_client_id, never a fabricated actor_user_id.
+        auditEventService.recordByClient(AuditEventType.ACCOUNT_CREATED, actorClientId, user.getId(),
                 Map.of("role", Role.PATIENT.name()));
 
         return new ProvisioningResult.Created(user.getId());
+    }
+
+    private ProvisioningResult recordConflict(UUID idempotencyKey, String normalizedEmail, String actorClientId) {
+        AccountProvisioningRequest request = new AccountProvisioningRequest();
+        request.setIdempotencyKey(idempotencyKey);
+        request.setRequestedEmail(normalizedEmail);
+        request.setOutcome(ProvisioningOutcome.CONFLICT);
+        request.setResolvedAt(Instant.now());
+        provisioningRequestRepository.save(request);
+
+        // subjectUserId is null here on purpose — this describes a
+        // rejected request, not an action taken against an existing account.
+        auditEventService.recordByClient(AuditEventType.PATIENT_PROVISIONING_CONFLICT, actorClientId, null,
+                Map.of("requestedEmail", normalizedEmail));
+
+        return new ProvisioningResult.Conflict();
     }
 
     // ---- Activation (tail of Workflow A / B) ----

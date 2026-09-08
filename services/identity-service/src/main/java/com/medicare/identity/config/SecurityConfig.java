@@ -52,20 +52,29 @@ public class SecurityConfig {
     @Bean
     public JwtAuthenticationConverter jwtAuthenticationConverter() {
 
-        JwtAuthenticationConverter converter =
-                new JwtAuthenticationConverter();
+        JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
+
+        // Default converter handles the standard "scope"/"scp" claim,
+        // producing SCOPE_xxx authorities — this is what lets
+        // hasAuthority("SCOPE_identity:provision-patient") work for
+        // client_credentials tokens (patient-service, etc).
+        org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter
+                defaultScopesConverter =
+                new org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter();
 
         converter.setJwtGrantedAuthoritiesConverter(jwt -> {
+            List<org.springframework.security.core.GrantedAuthority> authorities = new java.util.ArrayList<>();
 
+            // Human users: our custom "role" claim -> ROLE_xxx
             String role = jwt.getClaimAsString("role");
-
-            if (role == null || role.isBlank()) {
-                return List.of();
+            if (role != null && !role.isBlank()) {
+                authorities.add(new SimpleGrantedAuthority("ROLE_" + role));
             }
 
-            return List.of(
-                    new SimpleGrantedAuthority("ROLE_" + role)
-            );
+            // Machine clients: standard scope claim -> SCOPE_xxx
+            authorities.addAll(defaultScopesConverter.convert(jwt));
+
+            return authorities;
         });
 
         return converter;
@@ -95,6 +104,8 @@ public class SecurityConfig {
                                 "/accounts/activate",
                                 "/accounts/password-reset/**"
                         ).permitAll()
+                        .requestMatchers("/internal/patients/provision")
+                        .hasAuthority("SCOPE_identity:provision-patient")
 
                         // Login/error pages
                         .requestMatchers(
