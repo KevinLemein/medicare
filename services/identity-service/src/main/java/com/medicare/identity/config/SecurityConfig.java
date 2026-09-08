@@ -1,5 +1,7 @@
 package com.medicare.identity.config;
 
+import com.medicare.identity.security.LoginAuditAuthenticationFailureHandler;
+import com.medicare.identity.security.LoginAuditAuthenticationSuccessHandler;
 import com.medicare.identity.service.IdentityUserDetailsService;
 
 import org.springframework.context.annotation.Bean;
@@ -93,7 +95,9 @@ public class SecurityConfig {
     @Order(2)
     public SecurityFilterChain defaultSecurityFilterChain(
             HttpSecurity http,
-            JwtAuthenticationConverter jwtAuthenticationConverter
+            JwtAuthenticationConverter jwtAuthenticationConverter,
+            LoginAuditAuthenticationSuccessHandler loginAuditAuthenticationSuccessHandler,
+            LoginAuditAuthenticationFailureHandler loginAuditAuthenticationFailureHandler
     ) throws Exception {
 
         http
@@ -117,8 +121,27 @@ public class SecurityConfig {
                         .anyRequest().authenticated()
                 )
 
-                // Hosted login page
-                .formLogin(form -> form.permitAll())
+                // Hosted login page — success/failure handlers wire the
+                // lockout-tracking and audit side effects that plain
+                // form.permitAll() never triggered on its own.
+                .formLogin(form -> form
+                        .permitAll()
+                        .successHandler(loginAuditAuthenticationSuccessHandler)
+                        .failureHandler(loginAuditAuthenticationFailureHandler)
+                )
+
+                // CSRF protection is session/cookie-based and only makes
+                // sense for the browser-rendered hosted login form (which
+                // still benefits — it guards against login-CSRF). The
+                // account-management endpoints below are a JSON API called
+                // by non-browser or Bearer-token clients (the SPA via
+                // fetch, patient-service via client_credentials) that never
+                // carry a session-bound CSRF token, so the check is
+                // exempted for those paths.
+                .csrf(csrf -> csrf.ignoringRequestMatchers(
+                        "/accounts/**",
+                        "/internal/**"
+                ))
 
                 // Allow this service to validate JWT access tokens
                 .oauth2ResourceServer(oauth2 ->
