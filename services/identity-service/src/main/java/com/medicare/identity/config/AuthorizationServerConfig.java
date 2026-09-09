@@ -1,6 +1,8 @@
 package com.medicare.identity.config;
 
 import com.medicare.identity.repository.UserRepository;
+import com.medicare.identity.security.SessionCsrfRequirementMatcher;
+import com.medicare.identity.security.SigningKeyService;
 
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
@@ -33,12 +35,6 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
 import org.springframework.security.web.util.matcher.MediaTypeRequestMatcher;
 
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.security.interfaces.RSAPrivateKey;
-import java.security.interfaces.RSAPublicKey;
-import java.util.UUID;
-
 @Configuration
 public class AuthorizationServerConfig {
 
@@ -48,7 +44,7 @@ public class AuthorizationServerConfig {
     @Bean
     @Order(1)
     public SecurityFilterChain authorizationServerSecurityFilterChain(
-            HttpSecurity http) throws Exception {
+            HttpSecurity http, SessionCsrfRequirementMatcher sessionCsrfRequirementMatcher) throws Exception {
 
         http
                 .oauth2AuthorizationServer(authorizationServer -> {
@@ -62,7 +58,17 @@ public class AuthorizationServerConfig {
                                 new LoginUrlAuthenticationEntryPoint("/login"),
                                 new MediaTypeRequestMatcher(MediaType.TEXT_HTML)
                         )
-                );
+                )
+                // Same policy as SecurityConfig's chain (see
+                // SessionCsrfRequirementMatcher): required only for
+                // state-changing requests that already carry a session. That
+                // protects a browser's POST to /oauth2/authorize (consent
+                // approval) from being forged, while leaving the
+                // non-browser, non-session /oauth2/token exchange (PKCE
+                // public client or client_credentials) unaffected — it was
+                // previously not exempted at all, which would have made a
+                // real token exchange fail CSRF validation.
+                .csrf(csrf -> csrf.requireCsrfProtectionMatcher(sessionCsrfRequirementMatcher));
 
         return http.build();
     }
@@ -85,28 +91,9 @@ public class AuthorizationServerConfig {
     }
 
     @Bean
-    public JWKSource<SecurityContext> jwkSource() {
-        KeyPair keyPair = generateRsaKeyPair();
-
-        RSAPublicKey publicKey = (RSAPublicKey) keyPair.getPublic();
-        RSAPrivateKey privateKey = (RSAPrivateKey) keyPair.getPrivate();
-
-        RSAKey rsaKey = new RSAKey.Builder(publicKey)
-                .privateKey(privateKey)
-                .keyID(UUID.randomUUID().toString())
-                .build();
-
+    public JWKSource<SecurityContext> jwkSource(SigningKeyService signingKeyService) {
+        RSAKey rsaKey = signingKeyService.loadOrCreateSigningKey();
         return new ImmutableJWKSet<>(new JWKSet(rsaKey));
-    }
-
-    private KeyPair generateRsaKeyPair() {
-        try {
-            KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-            generator.initialize(2048);
-            return generator.generateKeyPair();
-        } catch (Exception e) {
-            throw new IllegalStateException("Failed to generate RSA key pair for JWT signing", e);
-        }
     }
 
     @Bean

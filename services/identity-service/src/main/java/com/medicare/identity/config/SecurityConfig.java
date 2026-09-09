@@ -2,6 +2,7 @@ package com.medicare.identity.config;
 
 import com.medicare.identity.security.LoginAuditAuthenticationFailureHandler;
 import com.medicare.identity.security.LoginAuditAuthenticationSuccessHandler;
+import com.medicare.identity.security.SessionCsrfRequirementMatcher;
 import com.medicare.identity.service.IdentityUserDetailsService;
 
 import org.springframework.context.annotation.Bean;
@@ -97,7 +98,8 @@ public class SecurityConfig {
             HttpSecurity http,
             JwtAuthenticationConverter jwtAuthenticationConverter,
             LoginAuditAuthenticationSuccessHandler loginAuditAuthenticationSuccessHandler,
-            LoginAuditAuthenticationFailureHandler loginAuditAuthenticationFailureHandler
+            LoginAuditAuthenticationFailureHandler loginAuditAuthenticationFailureHandler,
+            SessionCsrfRequirementMatcher sessionCsrfRequirementMatcher
     ) throws Exception {
 
         http
@@ -134,19 +136,17 @@ public class SecurityConfig {
                         .failureHandler(loginAuditAuthenticationFailureHandler)
                 )
 
-                // CSRF protection is session/cookie-based and only makes
-                // sense for the browser-rendered hosted login form (which
-                // still benefits — it guards against login-CSRF). Every
-                // other state-changing endpoint here is a JSON API called
-                // by non-browser or Bearer-token clients (the SPA via
-                // fetch, patient-service via client_credentials, admin
-                // tooling via Bearer JWT) that never carry a session-bound
-                // CSRF token, so the check is exempted for those paths.
-                .csrf(csrf -> csrf.ignoringRequestMatchers(
-                        "/accounts/**",
-                        "/internal/**",
-                        "/admin/**"
-                ))
+                // CSRF is required exactly for state-changing requests that
+                // already carry a session — see SessionCsrfRequirementMatcher.
+                // This protects the hosted /login form (still session-based,
+                // still worth guarding against login-CSRF) and, unlike a
+                // path-based exemption, also protects any endpoint here
+                // (including "/admin/**") from a forged request riding on an
+                // admin's browser session — while leaving genuinely stateless
+                // Bearer-token clients (the SPA via fetch, patient-service via
+                // client_credentials, admin tooling via Bearer JWT) unaffected,
+                // since they never have a session to begin with.
+                .csrf(csrf -> csrf.requireCsrfProtectionMatcher(sessionCsrfRequirementMatcher))
 
                 // Allow this service to validate JWT access tokens
                 .oauth2ResourceServer(oauth2 ->

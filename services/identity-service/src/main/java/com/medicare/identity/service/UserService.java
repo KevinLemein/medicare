@@ -14,6 +14,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Collections;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.Map;
@@ -34,6 +35,7 @@ public class UserService {
     private final PasswordService passwordService;
     private final AuditEventService auditEventService;
     private final TokenGenerator tokenGenerator;
+    private final TokenRevocationService tokenRevocationService;
     private final TransactionTemplate requiresNewTx;
 
     public UserService(UserRepository userRepository,
@@ -42,6 +44,7 @@ public class UserService {
                        PasswordService passwordService,
                        AuditEventService auditEventService,
                        TokenGenerator tokenGenerator,
+                       TokenRevocationService tokenRevocationService,
                        PlatformTransactionManager transactionManager) {
         this.userRepository = userRepository;
         this.accountTokenRepository = accountTokenRepository;
@@ -49,6 +52,7 @@ public class UserService {
         this.passwordService = passwordService;
         this.auditEventService = auditEventService;
         this.tokenGenerator = tokenGenerator;
+        this.tokenRevocationService = tokenRevocationService;
         this.requiresNewTx = new TransactionTemplate(transactionManager);
         this.requiresNewTx.setPropagationBehavior(TransactionTemplate.PROPAGATION_REQUIRES_NEW);
     }
@@ -284,21 +288,22 @@ public class UserService {
 
         auditEventService.recordSystem(AuditEventType.PASSWORD_RESET_COMPLETED, user.getId(), Map.of());
 
-        // NOT done here: refresh-token/authorization revocation (§12/§13).
-        // That needs Spring Authorization Server's OAuth2AuthorizationService,
-        // which doesn't exist until AuthorizationServerConfig is built.
+        // §12/§13: a reset invalidates whatever tokens were issued under
+        // the old password.
+        tokenRevocationService.revokeAllForPrincipal(user.getEmail(), user.getId());
     }
 
     // ---- Workflow G: authenticated password change ----
 
     @Transactional
     public void changePassword(UUID userId, String currentPassword, String newPassword) {
+        User user = userRepository.findById(userId).orElseThrow();
         if (!passwordService.matches(userId, currentPassword)) {
             throw new IllegalArgumentException("Current password is incorrect");
         }
         passwordService.changePassword(userId, newPassword);
         auditEventService.recordByUser(AuditEventType.PASSWORD_CHANGED, userId, userId, Map.of());
-        // Same revocation caveat as completePasswordReset.
+        tokenRevocationService.revokeAllForPrincipal(user.getEmail(), userId);
     }
 
     // ---- Workflows I/J/K: admin actions ----
@@ -311,7 +316,11 @@ public class UserService {
         }
         user.setStatus(AccountStatus.SUSPENDED);
         userRepository.save(user);
-        auditEventService.recordByUser(AuditEventType.ACCOUNT_SUSPENDED, actorAdminId, userId, Map.of("reason", reason));
+        // reason is optional here (AccountActionRequest) -- Map.of() rejects
+        // a null value, so a caller that omits it would NPE.
+        auditEventService.recordByUser(AuditEventType.ACCOUNT_SUSPENDED, actorAdminId, userId,
+                Collections.singletonMap("reason", reason));
+        tokenRevocationService.revokeAllForPrincipal(user.getEmail(), userId);
     }
 
     @Transactional
@@ -330,7 +339,10 @@ public class UserService {
         User user = userRepository.findById(userId).orElseThrow();
         user.setStatus(AccountStatus.DEACTIVATED);
         userRepository.save(user);
-        auditEventService.recordByUser(AuditEventType.ACCOUNT_DEACTIVATED, actorAdminId, userId, Map.of("reason", reason));
+        // Same optional-reason caveat as suspend() above.
+        auditEventService.recordByUser(AuditEventType.ACCOUNT_DEACTIVATED, actorAdminId, userId,
+                Collections.singletonMap("reason", reason));
+        tokenRevocationService.revokeAllForPrincipal(user.getEmail(), userId);
     }
 
     @Transactional
@@ -357,7 +369,7 @@ public class UserService {
         userRepository.save(user);
         auditEventService.recordByUser(AuditEventType.ROLE_CHANGED, actorAdminId, userId,
                 Map.of("oldRole", oldRole.name(), "newRole", newRole.name()));
-        // Same revocation caveat as password change/reset above.
+        tokenRevocationService.revokeAllForPrincipal(user.getEmail(), userId);
     }
 
     @Transactional

@@ -32,6 +32,7 @@ class UserServiceLockoutTest {
     @Mock private PasswordService passwordService;
     @Mock private AuditEventService auditEventService;
     @Mock private TokenGenerator tokenGenerator;
+    @Mock private TokenRevocationService tokenRevocationService;
     @Mock private PlatformTransactionManager transactionManager;
 
     private UserService userService;
@@ -39,7 +40,7 @@ class UserServiceLockoutTest {
     @BeforeEach
     void setUp() {
         userService = new UserService(userRepository, accountTokenRepository, provisioningRequestRepository,
-                passwordService, auditEventService, tokenGenerator, transactionManager);
+                passwordService, auditEventService, tokenGenerator, tokenRevocationService, transactionManager);
     }
 
     private User activeUser(String email) {
